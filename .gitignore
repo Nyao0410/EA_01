@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Backup and build artifacts
+*.ex4
+*.mq5
+*.mq4
+*.ex5
+
+# node/npm
+node_modules/
