@@ -27,8 +27,11 @@ input int ATRPeriod = 14;
 
 input double SLMultiplier = 1.5;   // SL = ATR * SLMultiplier
 input double TPMultiplier = 2.0;   // TP = ATR * TPMultiplier (reduced from 3.0 for realism)
-input double MinATRFilter = 0.00008;   // Minimum ATR to trade (avoid low volatility)
-input double BreakoutBuffer = 10.0;    // Buffer for swing breakout in points
+input double MinATRFilterHigh = 0.0003;    // ATR threshold for high volatility periods
+input double MinATRFilterLow = 0.0006;     // ATR threshold for low volatility periods (Asia hours)
+input double BreakoutBuffer = 10.0;        // Buffer for swing breakout in points
+input double TrailingStartPips = 20.0;     // Profit threshold to start trailing (in pips)
+input double TrailingStopPips = 10.0;      // Trailing stop distance (in pips)
 
 input int Slippage = 3;
 input ulong MagicNumber = 200101;
@@ -72,13 +75,20 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 	{
-	 // Read long-term MACD main value (zero-line trend)
-	 double macdLongMain[1];
-	 if(CopyBuffer(handleMACDLong,0,0,1,macdLongMain) < 1) return;
-	 double longMain = macdLongMain[0];
+	 // Read long-term MACD main value on CLOSED bars (shift=1 and shift=2) for momentum check
+	 double macdLongMain_1[1], macdLongMain_2[1];
+	 if(CopyBuffer(handleMACDLong,0,1,1,macdLongMain_1) < 1) return;
+	 if(CopyBuffer(handleMACDLong,0,2,1,macdLongMain_2) < 1) return;
+	 double longMain = macdLongMain_1[0];
+	 double longMainPrev = macdLongMain_2[0];
 
-	 int longTrend = 0; // 1=up, -1=down, 0=flat
-	 if(longMain > 0) longTrend = 1; else if(longMain < 0) longTrend = -1;
+	 int longTrend = 0; // 1=up, -1=down, 0=flat/unclear
+	 // Uptrend: MACD > 0 AND MACD is rising (longMainPrev < longMain)
+	 if(longMain > 0 && longMainPrev < longMain) 
+	 	longTrend = 1;
+	 // Downtrend: MACD < 0 AND MACD is falling (longMainPrev > longMain)
+	 else if(longMain < 0 && longMainPrev > longMain)
+	 	longTrend = -1;
 
 	 // Read short-term MACD main and signal on CLOSED bars (shift=1 and shift=2) for confirmed crosses
 	 double macdMain_1[1], macdMain_2[1];
@@ -122,10 +132,16 @@ void OnTick()
 	 double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
 	 
 	 // Apply volatility filter: only trade if ATR is large enough
+	 // Time-based filter: Asia hours (0-8) require higher ATR threshold
 	 double atrTestBuf[1];
 	 double atrForFilter = 0.0;
 	 if(CopyBuffer(handleATR,0,0,1,atrTestBuf) >= 1) atrForFilter = atrTestBuf[0];
-	 if(atrForFilter < MinATRFilter) 
+	 
+	 MqlDateTime dt;
+	 TimeToStruct(TimeCurrent(), dt);
+	 int hour = dt.hour;
+	 double requiredATR = ((hour >= 0 && hour < 8) ? MinATRFilterLow : MinATRFilterHigh);
+	 if(atrForFilter < requiredATR) 
 	 {
 	 	// Low volatility - skip trading
 	 	return;
@@ -133,8 +149,11 @@ void OnTick()
 	 
 	 // Add breakout buffer to swing levels
 	 double breakoutBuffer = BreakoutBuffer * point;
-	 bool buySignal  = (longTrend == 1) && buyCross && (ask > swingHigh + breakoutBuffer);
-	 bool sellSignal = (longTrend == -1) && sellCross && (bid < swingLow - breakoutBuffer);	 // Count existing EA positions for this symbol/magic
+	 
+	 // Check price continuation: verify price actually continues in breakout direction (avoid false signals)
+	 double closeShort = iClose(Symbol(), ShortTermTimeframe, 0);
+	 bool buySignal  = (longTrend == 1) && buyCross && (ask > swingHigh + breakoutBuffer) && (closeShort > ask);
+	 bool sellSignal = (longTrend == -1) && sellCross && (bid < swingLow - breakoutBuffer) && (closeShort < bid);	 // Count existing EA positions for this symbol/magic
 	 int currentPositions = 0;
 	 for(int i=0;i<PositionsTotal();i++)
 		 {
