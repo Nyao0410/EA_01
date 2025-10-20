@@ -289,7 +289,7 @@ void UpdateTrailingStop(double atr, int trendDirection)
       double trailingDistance = atr * TrailingStopATRMultiplier;
 
       // Buy position: move SL and TP upward if price is rising and trend continues
-      if (posType == POSITION_BUY && trendDirection == 1)
+      if (posType == POSITION_TYPE_BUY && trendDirection == 1)
       {
          double newSL = bid - trailingDistance;
          double newTP = bid + atr * TPMultiplier;
@@ -297,7 +297,8 @@ void UpdateTrailingStop(double atr, int trendDirection)
          // Only update if new SL is higher than current SL (trailing upward)
          if (newSL > posSL)
          {
-            if (!trade.PositionModify(ticket, newSL, newTP))
+            // PositionModify expects symbol in CTrade; use current symbol
+            if (!trade.PositionModify(Symbol(), newSL, newTP))
             {
                Print("Failed to modify BUY position: ", GetLastError());
             }
@@ -308,7 +309,7 @@ void UpdateTrailingStop(double atr, int trendDirection)
          }
       }
       // Sell position: move SL and TP downward if price is falling and trend continues
-      else if (posType == POSITION_SELL && trendDirection == -1)
+      else if (posType == POSITION_TYPE_SELL && trendDirection == -1)
       {
          double newSL = ask + trailingDistance;
          double newTP = ask - atr * TPMultiplier;
@@ -316,7 +317,7 @@ void UpdateTrailingStop(double atr, int trendDirection)
          // Only update if new SL is lower than current SL (trailing downward)
          if (newSL < posSL)
          {
-            if (!trade.PositionModify(ticket, newSL, newTP))
+            if (!trade.PositionModify(Symbol(), newSL, newTP))
             {
                Print("Failed to modify SELL position: ", GetLastError());
             }
