@@ -151,9 +151,11 @@ void OnTick()
 	 double breakoutBuffer = BreakoutBuffer * point;
 	 
 	 // Check price continuation: verify price actually continues in breakout direction (avoid false signals)
+	 // Buy: price has broken above swing high and close is above swing low (uptrend confirmed)
+	 // Sell: price has broken below swing low and close is below swing high (downtrend confirmed)
 	 double closeShort = iClose(Symbol(), ShortTermTimeframe, 0);
-	 bool buySignal  = (longTrend == 1) && buyCross && (ask > swingHigh + breakoutBuffer) && (closeShort > ask);
-	 bool sellSignal = (longTrend == -1) && sellCross && (bid < swingLow - breakoutBuffer) && (closeShort < bid);	 // Count existing EA positions for this symbol/magic
+	 bool buySignal  = (longTrend == 1) && buyCross && (ask > swingHigh + breakoutBuffer) && (closeShort > swingLow);
+	 bool sellSignal = (longTrend == -1) && sellCross && (bid < swingLow - breakoutBuffer) && (closeShort < swingHigh);	 // Count existing EA positions for this symbol/magic
 	 int currentPositions = 0;
 	 for(int i=0;i<PositionsTotal();i++)
 		 {
@@ -164,6 +166,9 @@ void OnTick()
 						currentPositions++;
 				}
 		 }
+
+	 // Update trailing stop for existing positions
+	 UpdateTrailingStops(ask, bid, point, atrForFilter);
 
 	 // If no open positions, try to open one
 	 if(currentPositions == 0)
@@ -244,6 +249,62 @@ double NormalizeLot(double lots)
 	 if(normalized < minV) normalized = minV;
 	 if(normalized > maxV) normalized = maxV;
 	 return(NormalizeDouble(normalized,2));
+	}
+
+//+------------------------------------------------------------------+
+// Update trailing stops for open positions
+void UpdateTrailingStops(double ask, double bid, double point, double atr)
+	{
+	 for(int i=PositionsTotal()-1; i>=0; i--)
+		 {
+			ulong ticket = PositionGetTicket(i);
+			if(ticket <= 0) continue;
+			if(!PositionSelectByTicket(ticket)) continue;
+			
+			if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber || PositionGetString(POSITION_SYMBOL) != Symbol())
+			   continue;
+			
+			ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+			double posOpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+			double posSL = PositionGetDouble(POSITION_SL);
+			double posTP = PositionGetDouble(POSITION_TP);
+			
+			double trailingDistancePips = TrailingStopPips * point;
+			double trailingStartPips = TrailingStartPips * point;
+			
+			// BUY position: move SL up if profit threshold reached
+			if(posType == POSITION_TYPE_BUY)
+			{
+			 double currentProfit = ask - posOpenPrice;
+			 if(currentProfit >= trailingStartPips)
+			 {
+				double newSL = ask - trailingDistancePips;
+				if(newSL > posSL + point) // Only update if higher
+				{
+				   if(!trade.PositionModify(Symbol(), newSL, posTP))
+				   {
+					  Print("Failed to update BUY trailing SL");
+				   }
+				}
+			 }
+			}
+			// SELL position: move SL down if profit threshold reached
+			else if(posType == POSITION_TYPE_SELL)
+			{
+			 double currentProfit = posOpenPrice - bid;
+			 if(currentProfit >= trailingStartPips)
+			 {
+				double newSL = bid + trailingDistancePips;
+				if(newSL < posSL - point) // Only update if lower
+				{
+				   if(!trade.PositionModify(Symbol(), newSL, posTP))
+				   {
+					  Print("Failed to update SELL trailing SL");
+				   }
+				}
+			 }
+			}
+		 }
 	}
 
 //+------------------------------------------------------------------+
