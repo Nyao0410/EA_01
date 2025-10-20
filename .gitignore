@@ -7,7 +7,6 @@
 # Backup and build artifacts
 *.ex4
 *.mq5
-*.mq4
 *.ex5
 
 # node/npm

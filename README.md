@@ -104,6 +104,7 @@ Windows 上の MetaTrader 4 を起動し、MetaEditor で EA をコンパイル�
 ## 次ステップと改善案
 
 ### 実装予定機能
+
 - [ ] トレーリング・ストップ機能
 - [ ] 複数ポジション管理（高度なリスク管理）
 - [ ] 外部イベントカレンダー API 統合（Forex Factory など）
@@ -111,7 +112,8 @@ Windows 上の MetaTrader 4 を起動し、MetaEditor で EA をコンパイル�
 - [ ] ログ機能の拡張（トレード履歴、統計）
 
 ### テスト・デバッグ
-- バックテスト中に結果がおかしい場合は、パラメータ（FastPeriod, SlowPeriod, ATR係数）を調整
+
+- バックテスト中に結果がおかしい場合は、パラメータ（FastPeriod, SlowPeriod, ATR 係数）を調整
 - Expert Tester の Logs タブでエラーを確認
 - Print() ステートメントで Debug 情報を出力
 
