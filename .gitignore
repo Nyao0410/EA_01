@@ -4,10 +4,5 @@
 # VSCode
 .vscode/
 
-# Backup and build artifacts
-*.ex4
-*.mq5
-*.ex5
-
 # node/npm
 node_modules/
