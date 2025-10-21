@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "2025"
 #property link      ""
-#property version   "8.00"
+#property version   "9.00"
 #property strict
 
 #include <Trade/Trade.mqh>
@@ -20,13 +20,14 @@ input int SenkouShift = 26;
 input group "== リスク管理 =="
 input double RiskPercent = 0.3;
 input double RiskRewardRatio = 2.0;  // 【NEW】リスクリワード比率
-input bool UseATRForSL = true;       // 【NEW】ATRベースのSL使用
-input double ATR_SL_Multiplier = 1.5; // 【NEW】ATR × この値 = SL幅
-input double FixedSL_Pips = 30.0;    // UseATRForSL=false時の固定SL
+input bool UseATRForSL = false;      // 【CHANGED】固定SLに変更
+input double ATR_SL_Multiplier = 0.8; // 【CHANGED】ATR × 0.8に縮小
+input double FixedSL_Pips = 25.0;    // 【CHANGED】30→25に縮小
 
 input group "== トレーリングストップ =="
-input double TrailingStart = 50.0;   // 改善: 100→50に縮小
-input double TrailingDistance = 20.0; // 改善: 30→20に縮小
+input bool UseTrailing = false;      // 【NEW】トレーリング無効化オプション
+input double TrailingStart = 35.0;   // 【CHANGED】50→35に縮小
+input double TrailingDistance = 15.0; // 【CHANGED】20→15に縮小
 
 input group "== エントリーフィルター =="
 input int MinCloudThickness = 10;    // 【NEW】最小雲の厚さ(pips) - 緩和
@@ -35,9 +36,9 @@ input int CloudConfirmBars = 1;      // 【NEW】雲抜け確定に必要な足�
 input bool CheckChikouSpan = false;  // 【NEW】遅行スパン確認 - デフォルトOFF
 
 input group "== エントリー制限 =="
-input int MaxTradesPerDay = 3;       // 【NEW】1日の最大エントリー数
-input int MinMinutesBetweenTrades = 60; // 【NEW】エントリー間隔(分)
-input int MaxConsecutiveLosses = 3;  // 【NEW】連敗でストップ
+input int MaxTradesPerDay = 5;       // 【CHANGED】3→5に緩和
+input int MinMinutesBetweenTrades = 30; // 【CHANGED】60→30に緩和
+input int MaxConsecutiveLosses = 2;  // 【CHANGED】3→2に厳格化
 
 input group "== その他 =="
 input int MaxPositions = 1;
@@ -206,7 +207,10 @@ void OnTick()
     int pos = CountPositions();
     
     // === トレーリングストップ更新 ===
-    UpdateTrailingStops(ask, bid, point);
+    if(UseTrailing)
+    {
+        UpdateTrailingStops(ask, bid, point);
+    }
     
     // === エントリー判定 ===
     if(pos >= MaxPositions) return;
