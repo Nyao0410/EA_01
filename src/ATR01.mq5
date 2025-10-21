@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
-//| MACD01.mq5                                                      |
-//| Multi-timeframe MACD-only Expert Advisor (MTF MACD)             |
-//| Long-term MACD defines trend, short-term MACD cross for entry   |
+//| ATR01.mq5                                                       +
+//| ATR-based Volatility Filtering Expert Advisor                   |
+//| Only trade when current ATR > 2x average ATR (strong direction) |
 //+------------------------------------------------------------------+
 #property copyright "2025"
 #property link      ""
@@ -11,30 +11,30 @@
 #include <Trade/Trade.mqh>
 
 // ===== INPUTS =====
-input ENUM_TIMEFRAMES LongTermTimeframe = PERIOD_H4;   // Trend timeframe (MACD zero-line) - changed to H4
+input ENUM_TIMEFRAMES LongTermTimeframe = PERIOD_H4;   // Trend timeframe (MACD zero-line)
 input ENUM_TIMEFRAMES ShortTermTimeframe = PERIOD_H1;  // Entry timeframe (MACD cross)
 
 input int MACDFast = 12;
 input int MACDSlow = 26;
 input int MACDSignal = 9;
-input int SwingLookback = 10;    // lookback bars to define swing high/low on short-term timeframe (増: 5→10)
+input int SwingLookback = 10;    // lookback bars for swing high/low
 
 // Money management
 input double RiskPercent = 1.0;    // % of equity to risk per trade
 input double MinLot = 0.01;
 input double MaxLot = 1.0;
 input int ATRPeriod = 14;
+input int ATRAvgPeriod = 50;       // Period for average ATR calculation
 
 input double SLMultiplier = 1.5;   // SL = ATR * SLMultiplier
-input double TPMultiplier = 2.0;   // TP = ATR * TPMultiplier (reduced from 3.0 for realism)
-input double MinATRFilterHigh = 0.0005;    // ATR threshold for high volatility periods (増: 0.0003→0.0005)
-input double MinATRFilterLow = 0.0010;     // ATR threshold for low volatility periods Asia hours (増: 0.0006→0.0010)
-input double BreakoutBuffer = 20.0;        // Buffer for swing breakout in points (増: 10→20)
-input double TrailingStartPips = 20.0;     // Profit threshold to start trailing (in pips)
-input double TrailingStopPips = 10.0;      // Trailing stop distance (in pips)
+input double TPMultiplier = 2.0;   // TP = ATR * TPMultiplier
+input double ATRMultiplier = 2.0;  // Only trade when current ATR > avgATR * ATRMultiplier
+input double BreakoutBuffer = 10.0;        // Buffer for swing breakout in points
+input double TrailingStartPips = 20.0;     // Profit threshold to start trailing
+input double TrailingStopPips = 10.0;      // Trailing stop distance
 
 input int Slippage = 3;
-input ulong MagicNumber = 200101;
+input ulong MagicNumber = 200102;
 
 // Indicator handles
 int handleMACDLong = INVALID_HANDLE;
@@ -59,7 +59,7 @@ int OnInit()
 	 trade.SetExpertMagicNumber(MagicNumber);
 	 trade.SetDeviationInPoints(Slippage);
 
-	 Print("MACD01 initialized");
+	 Print("ATR01 initialized");
 	 return(INIT_SUCCEEDED);
 	}
 
@@ -69,7 +69,7 @@ void OnDeinit(const int reason)
 	 if(handleMACDLong!=INVALID_HANDLE) IndicatorRelease(handleMACDLong);
 	 if(handleMACDShort!=INVALID_HANDLE) IndicatorRelease(handleMACDShort);
 	 if(handleATR!=INVALID_HANDLE) IndicatorRelease(handleATR);
-	 Print("MACD01 deinitialized");
+	 Print("ATR01 deinitialized");
 	}
 
 //+------------------------------------------------------------------+
@@ -83,18 +83,15 @@ void OnTick()
 	 double longMainPrev = macdLongMain_2[0];
 
 	 int longTrend = 0; // 1=up, -1=down, 0=flat/unclear
-	 // Uptrend: MACD > 0 AND MACD is rising (longMainPrev < longMain)
-	 if(longMain > 0 && longMainPrev < longMain) 
+	 if(longMain > 0) 
 	 	longTrend = 1;
-	 // Downtrend: MACD < 0 AND MACD is falling (longMainPrev > longMain)
-	 else if(longMain < 0 && longMainPrev > longMain)
+	 else if(longMain < 0)
 	 	longTrend = -1;
 
 	 // Read short-term MACD main and signal on CLOSED bars (shift=1 and shift=2) for confirmed crosses
 	 double macdMain_1[1], macdMain_2[1];
 	 double macdSig_1[1], macdSig_2[1];
 	 double macdMain_0[1], macdSig_0[1];  // Current forming bar for confirmation
-	 // Read confirmed (closed) bars only: shift=1 (most recent closed), shift=2 (one bar before)
 	 if(CopyBuffer(handleMACDShort,0,1,1,macdMain_1) < 1) return;
 	 if(CopyBuffer(handleMACDShort,0,2,1,macdMain_2) < 1) return;
 	 if(CopyBuffer(handleMACDShort,1,1,1,macdSig_1) < 1) return;
@@ -102,66 +99,74 @@ void OnTick()
 	 if(CopyBuffer(handleMACDShort,0,0,1,macdMain_0) < 1) return;  // Current bar confirmation
 	 if(CopyBuffer(handleMACDShort,1,0,1,macdSig_0) < 1) return;
 
-	 double mainCur = macdMain_1[0];   // Most recent closed bar
-	 double mainPrev = macdMain_2[0];  // Bar before (confirmed cross detection)
+	 double mainCur = macdMain_1[0];
+	 double mainPrev = macdMain_2[0];
 	 double sigCur  = macdSig_1[0];
 	 double sigPrev = macdSig_2[0];
 	 double mainNow = macdMain_0[0];   // Current forming bar
 	 double sigNow  = macdSig_0[0];
 
-	 // Cross detection with confirmation candle: Cross happened AND still continuing in current bar
 	 bool buyCross  = (mainPrev <= sigPrev) && (mainCur > sigCur) && (mainCur > 0) && (mainNow > sigNow);
 	 bool sellCross = (mainPrev >= sigPrev) && (mainCur < sigCur) && (mainCur < 0) && (mainNow < sigNow);
 
-		 // Get recent swing high/low on short-term timeframe (exclude current forming bar)
-		 double swingHigh = -1.0;
-		 double swingLow = -1.0;
-		 {
-			 // compute highest high and lowest low over last SwingLookback bars (shifts 1..SwingLookback)
-			 double hh = -DBL_MAX;
-			 double ll = DBL_MAX;
-			 for(int s=1; s<=SwingLookback; s++)
-				 {
-					double h = iHigh(Symbol(), ShortTermTimeframe, s);
-					double l = iLow(Symbol(), ShortTermTimeframe, s);
-					if(h > hh) hh = h;
-					if(l < ll) ll = l;
-				 }
-			 swingHigh = hh;
-			 swingLow = ll;
-		 }
+	 // Get recent swing high/low on short-term timeframe
+	 double swingHigh = -1.0;
+	 double swingLow = -1.0;
+	 {
+		 double hh = -DBL_MAX;
+		 double ll = DBL_MAX;
+		 for(int s=1; s<=SwingLookback; s++)
+			 {
+				double h = iHigh(Symbol(), ShortTermTimeframe, s);
+				double l = iLow(Symbol(), ShortTermTimeframe, s);
+				if(h > hh) hh = h;
+				if(l < ll) ll = l;
+			 }
+		 swingHigh = hh;
+		 swingLow = ll;
+	 }
 
-	 // Only take entries that align with long-term MACD zero-line
-	 // Require breakout of recent swing before entering to avoid counter-trend entries
 	 double ask = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
 	 double bid = SymbolInfoDouble(Symbol(), SYMBOL_BID);
 	 double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
 	 
-	 // Apply volatility filter: only trade if ATR is large enough
-	 // Time-based filter: Asia hours (0-8) require higher ATR threshold
-	 double atrTestBuf[1];
-	 double atrForFilter = 0.0;
-	 if(CopyBuffer(handleATR,0,0,1,atrTestBuf) >= 1) atrForFilter = atrTestBuf[0];
-	 
-	 MqlDateTime dt;
-	 TimeToStruct(TimeCurrent(), dt);
-	 int hour = dt.hour;
-	 double requiredATR = ((hour >= 0 && hour < 8) ? MinATRFilterLow : MinATRFilterHigh);
-	 if(atrForFilter < requiredATR) 
+	 // ===== CRITICAL FILTER: ATR-based volatility check =====
+	 // Calculate current ATR and average ATR over last 50 bars
+	 double atrCurrent = 0.0;
+	 double atrAvg = 0.0;
 	 {
-	 	// Low volatility - skip trading
+		 double atrBuf[1];
+		 if(CopyBuffer(handleATR,0,0,1,atrBuf) >= 1) atrCurrent = atrBuf[0];
+		 
+		 // Calculate average ATR over last ATRAvgPeriod bars
+		 double atrSum = 0.0;
+		 for(int i=0; i<ATRAvgPeriod; i++)
+			 {
+				if(CopyBuffer(handleATR,0,i,1,atrBuf) < 1) break;
+				atrSum += atrBuf[0];
+			 }
+		 atrAvg = atrSum / ATRAvgPeriod;
+	 }
+	 
+	 // Only trade if current ATR is significantly higher than average (strong direction)
+	 // Note: During backtest startup, atrAvg might not be fully formed, use minimum check
+	 double minATRThreshold = atrCurrent * 0.5;  // Fallback minimum
+	 double atrThreshold = (atrAvg > 0) ? atrAvg * ATRMultiplier : minATRThreshold;
+	 
+	 if(atrCurrent < atrThreshold)
+	 {
+	 	// Volatility too low - skip trading
 	 	return;
 	 }
 	 
-	 // Add breakout buffer to swing levels
 	 double breakoutBuffer = BreakoutBuffer * point;
+	 double closeShort = iClose(Symbol(), ShortTermTimeframe, 1);  // Use closed bar (shift=1)
 	 
-	 // Check price continuation: verify price actually continues in breakout direction (avoid false signals)
-	 // Buy: price has broken above swing high and close is above swing low (uptrend confirmed)
-	 // Sell: price has broken below swing low and close is below swing high (downtrend confirmed)
-	 double closeShort = iClose(Symbol(), ShortTermTimeframe, 0);
-	 bool buySignal  = (longTrend == 1) && buyCross && (ask > swingHigh + breakoutBuffer) && (closeShort > swingLow);
-	 bool sellSignal = (longTrend == -1) && sellCross && (bid < swingLow - breakoutBuffer) && (closeShort < swingHigh);	 // Count existing EA positions for this symbol/magic
+	 // Entry signals: More flexible conditions
+	 bool buySignal  = (longTrend == 1) && buyCross;
+	 bool sellSignal = (longTrend == -1) && sellCross;
+
+	 // Count existing EA positions for this symbol/magic
 	 int currentPositions = 0;
 	 for(int i=0;i<PositionsTotal();i++)
 		 {
@@ -174,43 +179,37 @@ void OnTick()
 		 }
 
 	 // Update trailing stop for existing positions
-	 UpdateTrailingStops(ask, bid, point, atrForFilter);
+	 UpdateTrailingStops(ask, bid, point, atrCurrent);
 
 	 // If no open positions, try to open one
 	 if(currentPositions == 0)
 		 {
-			double atr = 0.0;
-			double atrBuf[1];
-			if(CopyBuffer(handleATR,0,0,1,atrBuf) >= 1) atr = atrBuf[0];
-			if(atr <= 0) atr = SymbolInfoDouble(Symbol(), SYMBOL_POINT) * 1000; // fallback small value
-
-			double lot = CalculateLotSize(atr);
+			double lot = CalculateLotSize(atrCurrent);
 			if(lot < MinLot) lot = MinLot;
 			if(lot > MaxLot) lot = MaxLot;
+
+			Print("Debug - longTrend=", longTrend, " buyCross=", buyCross, " sellCross=", sellCross, 
+			      " atrCurrent=", atrCurrent, " atrAvg=", atrAvg, " atrThreshold=", atrThreshold);
 
 				if(buySignal)
 				{
 				 double price = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
-					// Prefer placing SL under recent swing low; fallback to ATR-based SL
-					double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
 					double sl = swingLow - point*10.0;
-					if(!(sl < price)) sl = price - atr * SLMultiplier; // ensure SL is below price
-					double tp = price + atr * TPMultiplier;
-				 if(trade.Buy(lot, Symbol(), price, sl, tp, "MTF_MACD_Buy"))
-						Print("Buy opened: lot=",lot," SL=",sl," TP=",tp);
+					if(!(sl < price)) sl = price - atrCurrent * SLMultiplier;
+					double tp = price + atrCurrent * TPMultiplier;
+				 if(trade.Buy(lot, Symbol(), price, sl, tp, "ATR_MACD_Buy"))
+						Print("Buy opened: lot=",lot," SL=",sl," TP=",tp," Current ATR=",atrCurrent," Avg ATR=",atrAvg);
 				 else
 						Print("Buy failed: ",GetLastError());
 				}
 				else if(sellSignal)
 				{
 				 double price = SymbolInfoDouble(Symbol(), SYMBOL_BID);
-					// Prefer placing SL above recent swing high; fallback to ATR-based SL
-					double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
 					double sl = swingHigh + point*10.0;
-					if(!(sl > price)) sl = price + atr * SLMultiplier; // ensure SL is above price
-					double tp = price - atr * TPMultiplier;
-				 if(trade.Sell(lot, Symbol(), price, sl, tp, "MTF_MACD_Sell"))
-						Print("Sell opened: lot=",lot," SL=",sl," TP=",tp);
+					if(!(sl > price)) sl = price + atrCurrent * SLMultiplier;
+					double tp = price - atrCurrent * TPMultiplier;
+				 if(trade.Sell(lot, Symbol(), price, sl, tp, "ATR_MACD_Sell"))
+						Print("Sell opened: lot=",lot," SL=",sl," TP=",tp," Current ATR=",atrCurrent," Avg ATR=",atrAvg);
 				 else
 						Print("Sell failed: ",GetLastError());
 				}
@@ -224,12 +223,10 @@ double CalculateLotSize(double atr)
 	 double equity = AccountInfoDouble(ACCOUNT_EQUITY);
 	 double riskMoney = equity * (RiskPercent/100.0);
 
-	 // approximate value per point
 	 double tickValue = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_VALUE);
 	 double tickSize  = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_SIZE);
 	 if(tickValue <= 0 || tickSize <= 0)
 		 {
-			// fallback approximate
 			double approx = riskMoney / (atr * 100000.0);
 			return(NormalizeLot(approx));
 		 }
@@ -258,7 +255,6 @@ double NormalizeLot(double lots)
 	}
 
 //+------------------------------------------------------------------+
-// Update trailing stops for open positions
 void UpdateTrailingStops(double ask, double bid, double point, double atr)
 	{
 	 for(int i=PositionsTotal()-1; i>=0; i--)
@@ -278,14 +274,13 @@ void UpdateTrailingStops(double ask, double bid, double point, double atr)
 			double trailingDistancePips = TrailingStopPips * point;
 			double trailingStartPips = TrailingStartPips * point;
 			
-			// BUY position: move SL up if profit threshold reached
 			if(posType == POSITION_TYPE_BUY)
 			{
 			 double currentProfit = ask - posOpenPrice;
 			 if(currentProfit >= trailingStartPips)
 			 {
 				double newSL = ask - trailingDistancePips;
-				if(newSL > posSL + point) // Only update if higher
+				if(newSL > posSL + point)
 				{
 				   if(!trade.PositionModify(Symbol(), newSL, posTP))
 				   {
@@ -294,14 +289,13 @@ void UpdateTrailingStops(double ask, double bid, double point, double atr)
 				}
 			 }
 			}
-			// SELL position: move SL down if profit threshold reached
 			else if(posType == POSITION_TYPE_SELL)
 			{
 			 double currentProfit = posOpenPrice - bid;
 			 if(currentProfit >= trailingStartPips)
 			 {
 				double newSL = bid + trailingDistancePips;
-				if(newSL < posSL - point) // Only update if lower
+				if(newSL < posSL - point)
 				{
 				   if(!trade.PositionModify(Symbol(), newSL, posTP))
 				   {
