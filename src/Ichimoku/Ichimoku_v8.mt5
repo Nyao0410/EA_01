@@ -1,0 +1,436 @@
+//+------------------------------------------------------------------+
+//| Ichimoku_Breakout_v8.mq5 - 改善版                                 +
+//| リスクリワード重視 + フィルター強化 + エントリー制限               +
+//+------------------------------------------------------------------+
+#property copyright "2025"
+#property link      ""
+#property version   "8.00"
+#property strict
+
+#include <Trade/Trade.mqh>
+
+// === 基本設定 ===
+input group "== 一目均衡表設定 =="
+input ENUM_TIMEFRAMES TF = PERIOD_D1;
+input int TenkanPeriod = 9;
+input int KijunPeriod = 26;
+input int SenkouBPeriod = 52;
+input int SenkouShift = 26;
+
+input group "== リスク管理 =="
+input double RiskPercent = 0.3;
+input double RiskRewardRatio = 2.0;  // 【NEW】リスクリワード比率
+input bool UseATRForSL = true;       // 【NEW】ATRベースのSL使用
+input double ATR_SL_Multiplier = 1.5; // 【NEW】ATR × この値 = SL幅
+input double FixedSL_Pips = 30.0;    // UseATRForSL=false時の固定SL
+
+input group "== トレーリングストップ =="
+input double TrailingStart = 50.0;   // 改善: 100→50に縮小
+input double TrailingDistance = 20.0; // 改善: 30→20に縮小
+
+input group "== エントリーフィルター =="
+input int MinCloudThickness = 30;    // 【NEW】最小雲の厚さ(pips)
+input int MinTenkanKijunGap = 20;    // 【NEW】転換線と基準線の最小距離(pips)
+input int CloudConfirmBars = 1;      // 【NEW】雲抜け確定に必要な足数
+input bool CheckChikouSpan = true;   // 【NEW】遅行スパン確認
+
+input group "== エントリー制限 =="
+input int MaxTradesPerDay = 3;       // 【NEW】1日の最大エントリー数
+input int MinMinutesBetweenTrades = 60; // 【NEW】エントリー間隔(分)
+input int MaxConsecutiveLosses = 3;  // 【NEW】連敗でストップ
+
+input group "== その他 =="
+input int MaxPositions = 1;
+input int Slippage = 10;
+input ulong Magic = 200308;
+
+// グローバル変数
+int handleIch = INVALID_HANDLE;
+int handleATR = INVALID_HANDLE;
+CTrade trade;
+
+datetime lastTradeTime = 0;
+int todayTradeCount = 0;
+int consecutiveLosses = 0;
+datetime lastTradeDate = 0;
+
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    handleIch = iIchimoku(Symbol(), TF, TenkanPeriod, KijunPeriod, SenkouBPeriod);
+    if(handleIch == INVALID_HANDLE) return INIT_FAILED;
+    
+    if(UseATRForSL)
+    {
+        handleATR = iATR(Symbol(), TF, 14);
+        if(handleATR == INVALID_HANDLE) return INIT_FAILED;
+    }
+    
+    trade.SetExpertMagicNumber(Magic);
+    trade.SetDeviationInPoints(Slippage);
+    
+    Print("========================================");
+    Print("[START] Ichimoku Breakout v8 - Improved");
+    Print("Risk/Reward: 1:", RiskRewardRatio);
+    Print("Max Trades/Day: ", MaxTradesPerDay);
+    Print("ATR-based SL: ", UseATRForSL ? "YES" : "NO");
+    Print("========================================");
+    
+    return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+    if(handleIch != INVALID_HANDLE) IndicatorRelease(handleIch);
+    if(handleATR != INVALID_HANDLE) IndicatorRelease(handleATR);
+}
+
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    // 日付が変わったらカウントリセット
+    datetime currentDate = iTime(Symbol(), PERIOD_D1, 0);
+    if(currentDate != lastTradeDate)
+    {
+        todayTradeCount = 0;
+        lastTradeDate = currentDate;
+    }
+    
+    double ask = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+    double bid = SymbolInfoDouble(Symbol(), SYMBOL_BID);
+    double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+    
+    // === 一目均衡表データ取得 ===
+    double tenkan[3], kijun[3], senkouA[3], senkouB[3], chikou[3];
+    if(CopyBuffer(handleIch, 0, 0, 3, tenkan) < 3) return;
+    if(CopyBuffer(handleIch, 1, 0, 3, kijun) < 3) return;
+    if(CopyBuffer(handleIch, 2, 0, 3, senkouA) < 3) return;
+    if(CopyBuffer(handleIch, 3, 0, 3, senkouB) < 3) return;
+    if(CheckChikouSpan && CopyBuffer(handleIch, 4, 0, 3, chikou) < 3) return;
+    
+    // 雲の上限・下限
+    double cloudTop0 = MathMax(senkouA[0], senkouB[0]);
+    double cloudBot0 = MathMin(senkouA[0], senkouB[0]);
+    double cloudTop1 = MathMax(senkouA[1], senkouB[1]);
+    double cloudBot1 = MathMin(senkouA[1], senkouB[1]);
+    double cloudTop2 = MathMax(senkouA[2], senkouB[2]);
+    double cloudBot2 = MathMin(senkouA[2], senkouB[2]);
+    
+    // 価格データ
+    double close0 = iClose(Symbol(), TF, 0);
+    double close1 = iClose(Symbol(), TF, 1);
+    double close2 = iClose(Symbol(), TF, 2);
+    double high1 = iHigh(Symbol(), TF, 1);
+    double low1 = iLow(Symbol(), TF, 1);
+    
+    // ATR取得（SL計算用）
+    double atrValue = 0;
+    if(UseATRForSL)
+    {
+        double atr[1];
+        if(CopyBuffer(handleATR, 0, 0, 1, atr) > 0)
+            atrValue = atr[0];
+    }
+    
+    // === フィルター条件チェック ===
+    
+    // 1. 雲の厚さチェック
+    double cloudThickness = (cloudTop0 - cloudBot0) / point;
+    if(cloudThickness < MinCloudThickness)
+    {
+        // Print("[FILTER] Cloud too thin: ", cloudThickness, " < ", MinCloudThickness);
+        return;
+    }
+    
+    // 2. 転換線と基準線の距離チェック
+    double tenkanKijunGap = MathAbs(tenkan[0] - kijun[0]) / point;
+    if(tenkanKijunGap < MinTenkanKijunGap)
+    {
+        // Print("[FILTER] Tenkan-Kijun gap too small: ", tenkanKijunGap);
+        return;
+    }
+    
+    // === シグナル判定（改善版） ===
+    bool buySignal = false;
+    bool sellSignal = false;
+    
+    // 買いシグナル: 雲下→雲上への明確なブレイク
+    if(CloudConfirmBars >= 1)
+    {
+        bool wasBelow = (close1 < cloudBot1);
+        bool isAbove = (close0 > cloudTop0);
+        
+        if(CloudConfirmBars >= 2)
+        {
+            wasBelow = wasBelow && (close2 < cloudBot2);
+        }
+        
+        if(wasBelow && isAbove)
+        {
+            // 追加フィルター: 転換線 > 基準線
+            if(tenkan[0] > kijun[0])
+            {
+                // 遅行スパンチェック
+                if(!CheckChikouSpan || chikou[0] > close0)
+                {
+                    buySignal = true;
+                }
+            }
+        }
+    }
+    
+    // 売りシグナル: 雲上→雲下への明確なブレイク
+    if(CloudConfirmBars >= 1)
+    {
+        bool wasAbove = (close1 > cloudTop1);
+        bool isBelow = (close0 < cloudBot0);
+        
+        if(CloudConfirmBars >= 2)
+        {
+            wasAbove = wasAbove && (close2 > cloudTop2);
+        }
+        
+        if(wasAbove && isBelow)
+        {
+            // 追加フィルター: 転換線 < 基準線
+            if(tenkan[0] < kijun[0])
+            {
+                // 遅行スパンチェック
+                if(!CheckChikouSpan || chikou[0] < close0)
+                {
+                    sellSignal = true;
+                }
+            }
+        }
+    }
+    
+    // === ポジション数カウント ===
+    int pos = CountPositions();
+    
+    // === トレーリングストップ更新 ===
+    UpdateTrailingStops(ask, bid, point);
+    
+    // === エントリー判定 ===
+    if(pos >= MaxPositions) return;
+    
+    // エントリー制限チェック
+    if(!CanEnterTrade()) return;
+    
+    // 連敗制限チェック
+    if(consecutiveLosses >= MaxConsecutiveLosses)
+    {
+        Print("[LIMIT] Max consecutive losses reached: ", consecutiveLosses);
+        return;
+    }
+    
+    // === エントリー実行 ===
+    if(buySignal || sellSignal)
+    {
+        double lot = CalculateLotSize(atrValue, high1, low1, ask, bid, point);
+        
+        if(buySignal)
+        {
+            double slDistance = CalculateSLDistance(atrValue, high1, low1, true, point);
+            double sl = ask - slDistance;
+            double tp = ask + (slDistance * RiskRewardRatio);
+            
+            if(trade.Buy(lot, Symbol(), ask, sl, tp, "CloudBU_v8"))
+            {
+                Print("========================================");
+                Print("[BUY] Entry: ", ask, " | SL: ", sl, " | TP: ", tp);
+                Print("      SL Distance: ", slDistance/point, " pips");
+                Print("      Risk/Reward: 1:", RiskRewardRatio);
+                Print("========================================");
+                
+                lastTradeTime = TimeCurrent();
+                todayTradeCount++;
+            }
+        }
+        else if(sellSignal)
+        {
+            double slDistance = CalculateSLDistance(atrValue, high1, low1, false, point);
+            double sl = bid + slDistance;
+            double tp = bid - (slDistance * RiskRewardRatio);
+            
+            if(trade.Sell(lot, Symbol(), bid, sl, tp, "CloudBD_v8"))
+            {
+                Print("========================================");
+                Print("[SELL] Entry: ", bid, " | SL: ", sl, " | TP: ", tp);
+                Print("       SL Distance: ", slDistance/point, " pips");
+                Print("       Risk/Reward: 1:", RiskRewardRatio);
+                Print("========================================");
+                
+                lastTradeTime = TimeCurrent();
+                todayTradeCount++;
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+// SL距離の計算（ATRまたは固定）
+//+------------------------------------------------------------------+
+double CalculateSLDistance(double atr, double high1, double low1, bool isBuy, double point)
+{
+    if(UseATRForSL && atr > 0)
+    {
+        return atr * ATR_SL_Multiplier;
+    }
+    else
+    {
+        return FixedSL_Pips * point;
+    }
+}
+
+//+------------------------------------------------------------------+
+// ロットサイズ計算（リスク固定）
+//+------------------------------------------------------------------+
+double CalculateLotSize(double atr, double high1, double low1, double ask, double bid, double point)
+{
+    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+    double riskAmount = equity * RiskPercent / 100.0;
+    
+    double tickVal = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_VALUE);
+    double tickSize = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_SIZE);
+    if(tickVal <= 0) return 0.01;
+    
+    // SL距離を取得
+    double slDistance = CalculateSLDistance(atr, high1, low1, true, point);
+    
+    // ロット計算
+    double lot = riskAmount / (slDistance * tickVal / tickSize);
+    lot = MathFloor(lot / 0.01) * 0.01;
+    
+    double minLot = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN);
+    double maxLot = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MAX);
+    
+    lot = MathMax(lot, minLot);
+    lot = MathMin(lot, maxLot);
+    
+    return lot;
+}
+
+//+------------------------------------------------------------------+
+// エントリー可能かチェック
+//+------------------------------------------------------------------+
+bool CanEnterTrade()
+{
+    // 1日のトレード数制限
+    if(todayTradeCount >= MaxTradesPerDay)
+    {
+        // Print("[LIMIT] Max trades per day reached: ", todayTradeCount);
+        return false;
+    }
+    
+    // 前回トレードからの時間制限
+    if(lastTradeTime > 0)
+    {
+        int minutesPassed = (int)((TimeCurrent() - lastTradeTime) / 60);
+        if(minutesPassed < MinMinutesBetweenTrades)
+        {
+            // Print("[LIMIT] Too soon since last trade: ", minutesPassed, " min");
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+// ポジション数カウント
+//+------------------------------------------------------------------+
+int CountPositions()
+{
+    int count = 0;
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        if(PositionGetTicket(i) > 0 && PositionSelectByTicket(PositionGetTicket(i)))
+        {
+            if(PositionGetInteger(POSITION_MAGIC) == (long)Magic && 
+               PositionGetString(POSITION_SYMBOL) == Symbol())
+            {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+//+------------------------------------------------------------------+
+// トレーリングストップ更新
+//+------------------------------------------------------------------+
+void UpdateTrailingStops(double ask, double bid, double point)
+{
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        if(PositionGetTicket(i) <= 0 || !PositionSelectByTicket(PositionGetTicket(i))) 
+            continue;
+        if(PositionGetInteger(POSITION_MAGIC) != (long)Magic) 
+            continue;
+        
+        ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+        double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+        double sl = PositionGetDouble(POSITION_SL);
+        double tp = PositionGetDouble(POSITION_TP);
+        
+        if(type == POSITION_TYPE_BUY)
+        {
+            double profit = ask - openPrice;
+            if(profit >= TrailingStart * point)
+            {
+                double newSL = ask - TrailingDistance * point;
+                if(newSL > sl + point) // 少なくとも1pips改善
+                {
+                    trade.PositionModify(Symbol(), newSL, tp);
+                    Print("[TRAIL] BUY SL moved to: ", newSL, " (Profit: ", profit/point, " pips)");
+                }
+            }
+        }
+        else if(type == POSITION_TYPE_SELL)
+        {
+            double profit = openPrice - bid;
+            if(profit >= TrailingStart * point)
+            {
+                double newSL = bid + TrailingDistance * point;
+                if(newSL < sl - point || sl == 0) // 少なくとも1pips改善
+                {
+                    trade.PositionModify(Symbol(), newSL, tp);
+                    Print("[TRAIL] SELL SL moved to: ", newSL, " (Profit: ", profit/point, " pips)");
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+// 決済イベント（連敗カウント更新）
+//+------------------------------------------------------------------+
+void OnTradeTransaction(const MqlTradeTransaction& trans,
+                       const MqlTradeRequest& request,
+                       const MqlTradeResult& result)
+{
+    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
+    {
+        if(HistoryDealSelect(trans.deal))
+        {
+            long dealMagic = HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
+            if(dealMagic == (long)Magic)
+            {
+                double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT);
+                
+                if(profit < 0)
+                {
+                    consecutiveLosses++;
+                    Print("[LOSS] Consecutive losses: ", consecutiveLosses);
+                }
+                else if(profit > 0)
+                {
+                    consecutiveLosses = 0;
+                    Print("[WIN] Consecutive losses reset");
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
