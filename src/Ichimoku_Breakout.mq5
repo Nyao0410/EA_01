@@ -123,14 +123,14 @@ void OnTick()
 			
 			if(buySignal)
 				{
-				 double sl = low1 - 30*point;  // 前日安値の30pips下 = タイトSL
+				 double sl = low1 - 20*point;  // 前日安値の20pips下 = もっとタイトSL
 				 double tp = ask + 300*point;  // 固定TP: 300pips（トレーリングで伸ばす）
 				 if(trade.Buy(lot, Symbol(), ask, sl, tp, "CloudBU"))
 					 Print("[BUY] CloudBreakUp SL=", sl);
 				}
 			else if(sellSignal)
 				{
-				 double sl = high1 + 30*point;  // 前日高値の30pips上 = タイトSL
+				 double sl = high1 + 20*point;  // 前日高値の20pips上 = もっとタイトSL
 				 double tp = bid - 300*point;  // 固定TP: 300pips（トレーリングで伸ばす）
 				 if(trade.Sell(lot, Symbol(), bid, sl, tp, "CloudBD"))
 					 Print("[SELL] CloudBreakDown SL=", sl);
