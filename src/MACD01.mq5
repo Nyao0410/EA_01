@@ -18,6 +18,7 @@ input int MACDFast = 12;
 input int MACDSlow = 26;
 input int MACDSignal = 9;
 input int SwingLookback = 10;    // lookback bars to define swing high/low on short-term timeframe (増: 5→10)
+input double MACDStrengthThreshold = 0.0005; // minimum absolute MACD main value to consider a cross strong
 
 // Money management
 input double RiskPercent = 1.0;    // % of equity to risk per trade
@@ -93,25 +94,20 @@ void OnTick()
 	 // Read short-term MACD main and signal on CLOSED bars (shift=1 and shift=2) for confirmed crosses
 	 double macdMain_1[1], macdMain_2[1];
 	 double macdSig_1[1], macdSig_2[1];
-	 double macdMain_0[1], macdSig_0[1];  // Current forming bar for confirmation
 	 // Read confirmed (closed) bars only: shift=1 (most recent closed), shift=2 (one bar before)
 	 if(CopyBuffer(handleMACDShort,0,1,1,macdMain_1) < 1) return;
 	 if(CopyBuffer(handleMACDShort,0,2,1,macdMain_2) < 1) return;
 	 if(CopyBuffer(handleMACDShort,1,1,1,macdSig_1) < 1) return;
 	 if(CopyBuffer(handleMACDShort,1,2,1,macdSig_2) < 1) return;
-	 if(CopyBuffer(handleMACDShort,0,0,1,macdMain_0) < 1) return;  // Current bar confirmation
-	 if(CopyBuffer(handleMACDShort,1,0,1,macdSig_0) < 1) return;
 
 	 double mainCur = macdMain_1[0];   // Most recent closed bar
 	 double mainPrev = macdMain_2[0];  // Bar before (confirmed cross detection)
 	 double sigCur  = macdSig_1[0];
 	 double sigPrev = macdSig_2[0];
-	 double mainNow = macdMain_0[0];   // Current forming bar
-	 double sigNow  = macdSig_0[0];
 
-	 // Cross detection with confirmation candle: Cross happened AND still continuing in current bar
-	 bool buyCross  = (mainPrev <= sigPrev) && (mainCur > sigCur) && (mainCur > 0) && (mainNow > sigNow);
-	 bool sellCross = (mainPrev >= sigPrev) && (mainCur < sigCur) && (mainCur < 0) && (mainNow < sigNow);
+	 // Cross detection with MACD strength threshold (avoid weak crosses)
+	 bool buyCross  = (mainPrev <= sigPrev) && (mainCur > sigCur) && (mainCur > MACDStrengthThreshold);
+	 bool sellCross = (mainPrev >= sigPrev) && (mainCur < sigCur) && (mainCur < -MACDStrengthThreshold);
 
 		 // Get recent swing high/low on short-term timeframe (exclude current forming bar)
 		 double swingHigh = -1.0;

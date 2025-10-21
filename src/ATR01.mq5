@@ -83,9 +83,9 @@ void OnTick()
 	 double longMainPrev = macdLongMain_2[0];
 
 	 int longTrend = 0; // 1=up, -1=down, 0=flat/unclear
-	 if(longMain > 0) 
+	 if(longMain > 0 && longMainPrev < longMain) 
 	 	longTrend = 1;
-	 else if(longMain < 0)
+	 else if(longMain < 0 && longMainPrev > longMain)
 	 	longTrend = -1;
 
 	 // Read short-term MACD main and signal on CLOSED bars (shift=1 and shift=2) for confirmed crosses
@@ -149,22 +149,17 @@ void OnTick()
 	 }
 	 
 	 // Only trade if current ATR is significantly higher than average (strong direction)
-	 // Note: During backtest startup, atrAvg might not be fully formed, use minimum check
-	 double minATRThreshold = atrCurrent * 0.5;  // Fallback minimum
-	 double atrThreshold = (atrAvg > 0) ? atrAvg * ATRMultiplier : minATRThreshold;
-	 
-	 if(atrCurrent < atrThreshold)
+	 if(atrCurrent < atrAvg * ATRMultiplier)
 	 {
 	 	// Volatility too low - skip trading
 	 	return;
 	 }
 	 
 	 double breakoutBuffer = BreakoutBuffer * point;
-	 double closeShort = iClose(Symbol(), ShortTermTimeframe, 1);  // Use closed bar (shift=1)
+	 double closeShort = iClose(Symbol(), ShortTermTimeframe, 0);
 	 
-	 // Entry signals: More flexible conditions
-	 bool buySignal  = (longTrend == 1) && buyCross;
-	 bool sellSignal = (longTrend == -1) && sellCross;
+	 bool buySignal  = (longTrend == 1) && buyCross && (ask > swingHigh + breakoutBuffer) && (closeShort > swingLow);
+	 bool sellSignal = (longTrend == -1) && sellCross && (bid < swingLow - breakoutBuffer) && (closeShort < swingHigh);
 
 	 // Count existing EA positions for this symbol/magic
 	 int currentPositions = 0;
@@ -187,9 +182,6 @@ void OnTick()
 			double lot = CalculateLotSize(atrCurrent);
 			if(lot < MinLot) lot = MinLot;
 			if(lot > MaxLot) lot = MaxLot;
-
-			Print("Debug - longTrend=", longTrend, " buyCross=", buyCross, " sellCross=", sellCross, 
-			      " atrCurrent=", atrCurrent, " atrAvg=", atrAvg, " atrThreshold=", atrThreshold);
 
 				if(buySignal)
 				{
